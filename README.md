@@ -38,7 +38,20 @@ Example (macOS):
 
 - `-Asset=` (required): the long package path of the asset to dump, e.g. `/Game/Blueprints/BP_MyActor`. A bare package path is sufficient — the commandlet resolves and dumps every top-level object the package contains, without needing a fully-qualified object name.
 - The remaining flags aren't required by the commandlet itself but are recommended for scripted use: `-unattended -nopause -nosplash` suppress interactive dialogs, `-nullrhi` skips renderer initialization (not needed for a data-only dump), and `-stdout -FullStdOutLogOutput` force complete, immediate log output to the terminal.
-- Exit code `0` on success. Exit code `1` if `-Asset=` is missing, the package fails to load, or no object in the package could be exported.
+- Exit code: see [Exit codes](#exit-codes) below — each failure mode has its own distinct value.
+
+## Exit codes
+
+Every failure mode returns a distinct process exit code, so a caller can tell *why* a run failed without parsing log output — in particular, a run where some objects failed to export (`5`) is never indistinguishable from a fully successful run (`0`), unlike a plain success/failure boolean.
+
+| Code | Meaning |
+|---|---|
+| `0` | Success — every top-level object in the package was exported. |
+| `1` | `-Asset=` was missing or empty. |
+| `2` | The package failed to load (`LoadPackage` returned null) — bad path, or the asset doesn't exist. |
+| `3` | The package loaded but contained no top-level objects (e.g. everything present was filtered as a `SKEL_*` class). |
+| `4` | The package had top-level objects, but none of them could be exported (no registered `UExporter` for any of their classes, or every exporter produced empty output). |
+| `5` | Partial success — at least one object exported, but at least one other object in the same package failed to export (check the log for `Warning`-level `No exporter found` / `Exporter produced no text` lines to see which). |
 
 ## Output format
 
@@ -60,7 +73,7 @@ Unreal's raw text exporter is extremely verbose. A large share of its output is 
 1. **`SKEL_*` generated classes are never dumped.** Every Blueprint compiles a `SKEL_<Name>_C` class as a compiler-internal stand-in used only to resolve circular references during compilation. It restates the same functions/properties as the real generated class (`<Name>_C`) with nothing new, so it's excluded from the set of objects exported.
 2. **The exporter's duplicate "declare" pass is skipped.** Unreal's text exporter normally runs two passes over each nested subobject: one that declares only its class and name, and a second that fills in its actual property values. This commandlet requests only the second pass (`PPF_SeparateDefine` port flag). No type information is lost — each subobject's class remains fully recoverable from its `ExportPath=` attribute, which this flag does not affect.
 3. **StateTree `IDToStateMappings` / `IDToNodeMappings` / `IDToTransitionMappings` lines are dropped.** These are GUID → array-index lookup tables used only by the compiled State Tree at runtime. The same GUIDs already appear as `ID=` on the corresponding state/task objects earlier in the same dump.
-4. **Blueprint graph `Nodes(N)="..."` index lines are dropped.** Every node an `EdGraph`'s `Nodes()` array names is already fully declared, with all its properties, via its own `Begin Object` block earlier in the same graph — the array is pure ordering bookkeeping.
+4. **`EdGraph` `Nodes(N)="..."` index lines are dropped.** Every node an `EdGraph`'s `Nodes()` array names is already fully declared, with all its properties, via its own `Begin Object` block earlier in the same graph — the array is pure ordering bookkeeping. This is scoped specifically to objects that carry a `Schema=...EdGraphSchema...` property (the marker only a real `UEdGraph`, or subclass — material graphs, anim graphs, sound cue graphs, etc. — ever exports), not to any line merely shaped like `Nodes(N)=`. A same-shaped but unrelated `Nodes` array on another class (e.g. `UMovieSceneNodeGroup::Nodes`, real non-redundant node-tree-path data on Level Sequence assets) is never dropped.
 5. **Known-default/empty Blueprint pin sub-fields are stripped.** Graph pins (`CustomProperties Pin (...)`) are exported through a code path (`UEdGraphPin::ExportTextItem`) that, unlike normal property export, never compares against a default — every pin restates the same set of fields whether or not they hold a non-default value. A field below is removed only when it is present with exactly the listed value (verified against the pin type's real constructor defaults); any pin where a value differs from its default (e.g. `bHidden=True`, an actual `LinkedTo=`) is left completely untouched:
    - `PinType.ContainerType=None`
    - `PinType.bIsReference=False`

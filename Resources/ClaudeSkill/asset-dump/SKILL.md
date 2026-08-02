@@ -45,7 +45,7 @@ Capture stdout to a file right away rather than relying on terminal scrollback â
 
 ## Reading the output
 
-- Exit code `0` on success. Exit code `1` if `-Asset=` was missing, the package failed to load, or no object in the package had a usable exporter.
+- Exit code `0` means every object exported successfully. Any non-zero code means something failed -- codes `1`-`5` each mean something different (missing `-Asset=`, package load failure, no top-level objects, no object exportable, or a *partial* success where some objects exported and others didn't). Don't just treat "non-zero" as one failure mode -- see the exit codes table in `Plugins/AssetDump/README.md` for the exact meaning of each code, especially code `5` (partial success), which still has real, usable output worth reading.
 - All output goes through the `LogAssetDump` category, one line per log call â€” safe to grep/parse line-by-line.
 - Each top-level object in the package is wrapped: `---- BEGIN <PackagePath>.<ObjectName> ----` / `---- END ... ----`. A single package can contain several top-level objects (e.g. a Blueprint's asset, generated class, and CDO), so expect possibly multiple blocks in one run.
 - A `---- N GUID(s) aliased to short ids for readability (scoped to this dump only) ----` notice precedes the first block when applicable.

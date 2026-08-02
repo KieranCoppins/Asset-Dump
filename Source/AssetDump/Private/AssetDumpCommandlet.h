@@ -7,6 +7,22 @@
 #include "AssetDumpCommandlet.generated.h"
 
 /**
+ * Process exit codes this commandlet can return. Each failure mode gets its own distinct value (documented
+ * in Plugins/AssetDump/README.md) so a caller can tell *why* a run failed from the exit code alone, without
+ * having to parse log output -- and, importantly, so "some objects failed to export" (PartialExportFailure)
+ * is never indistinguishable from a fully successful run.
+ */
+enum class EAssetDumpExitCode : int32
+{
+	Success               = 0,
+	MissingAssetParam     = 1,
+	PackageLoadFailed     = 2,
+	NoTopLevelObjects     = 3,
+	NoObjectExported      = 4,
+	PartialExportFailure  = 5,
+};
+
+/**
  * Loads a single uasset package and prints a human-readable text export of its
  * contents to the log/console, mirroring Epic's UDiffAssetsCommandlet export
  * pipeline (UExporter + FExportObjectInnerContext) but targeting the console
@@ -26,16 +42,6 @@ public:
 	virtual int32 Main(const FString& Params) override;
 
 private:
-	static bool LoadTopLevelObjects(const FString& PackagePathOrFilename, TArray<UObject*>& OutObjects);
-	static bool DumpObjects(const TArray<UObject*>& Objects);
-
-	/**
-	 * Scans every exported object's lines and assigns each distinct FGuid-shaped hex token a short alias:
-	 * the nearby human-readable Name="..." property when one can be paired with it (disambiguated on
-	 * collision), otherwise a sequential G<N> fallback. Aliases are scoped to a single commandlet run.
-	 */
-	static TMap<FString, FString> BuildGuidAliasMap(const TArray<TArray<FString>>& AllObjectLines);
-
-	/** Replaces every occurrence of a known GUID in Line with its alias from GuidToAlias. */
-	static FString ApplyGuidAliases(const FString& Line, const TMap<FString, FString>& GuidToAlias);
+	static EAssetDumpExitCode LoadTopLevelObjects(const FString& PackagePathOrFilename, TArray<UObject*>& OutObjects);
+	static EAssetDumpExitCode DumpObjects(const TArray<UObject*>& Objects);
 };
