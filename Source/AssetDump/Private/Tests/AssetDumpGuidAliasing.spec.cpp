@@ -50,11 +50,11 @@ void FAssetDumpGuidAliasingSpec::Define()
 			const TArray<TArray<FString>> AllLines = {
 				{
 					TEXT("Begin Object Name=\"State1\""),
-					TEXT("   Name=\"Interact with Post\""),
+					TEXT("   Name=\"Example State\""),
 					TEXT("   ID=") + GuidA,
 					TEXT("End Object"),
 					TEXT("Begin Object Name=\"State2\""),
-					TEXT("   Name=\"Interact with Post\""),
+					TEXT("   Name=\"Example State\""),
 					TEXT("   ID=") + GuidB,
 					TEXT("End Object"),
 				}
@@ -65,8 +65,8 @@ void FAssetDumpGuidAliasingSpec::Define()
 			const FString* AliasB = Result.Find(GuidB);
 			if (TestNotNull(TEXT("guidA present"), AliasA) && TestNotNull(TEXT("guidB present"), AliasB))
 			{
-				TestEqual(TEXT("first gets base name"), *AliasA, TEXT("Interact_with_Post"));
-				TestEqual(TEXT("second gets _2 suffix"), *AliasB, TEXT("Interact_with_Post_2"));
+				TestEqual(TEXT("first gets base name"), *AliasA, TEXT("Example_State"));
+				TestEqual(TEXT("second gets _2 suffix"), *AliasB, TEXT("Example_State_2"));
 			}
 		});
 
@@ -75,15 +75,15 @@ void FAssetDumpGuidAliasingSpec::Define()
 			const TArray<TArray<FString>> AllLines = {
 				{
 					TEXT("Begin Object Name=\"State1\""),
-					TEXT("   Name=\"Interact with Post\""),
+					TEXT("   Name=\"Example State\""),
 					TEXT("   ID=") + GuidA,
 					TEXT("End Object"),
 					TEXT("Begin Object Name=\"State2\""),
-					TEXT("   Name=\"Interact with Post\""),
+					TEXT("   Name=\"Example State\""),
 					TEXT("   ID=") + GuidB,
 					TEXT("End Object"),
 					TEXT("Begin Object Name=\"State3\""),
-					TEXT("   Name=\"Interact with Post\""),
+					TEXT("   Name=\"Example State\""),
 					TEXT("   ID=") + GuidC,
 					TEXT("End Object"),
 				}
@@ -92,7 +92,7 @@ void FAssetDumpGuidAliasingSpec::Define()
 			const FString* AliasC = Result.Find(GuidC);
 			if (TestNotNull(TEXT("guidC present"), AliasC))
 			{
-				TestEqual(TEXT("third gets _3 suffix"), *AliasC, TEXT("Interact_with_Post_3"));
+				TestEqual(TEXT("third gets _3 suffix"), *AliasC, TEXT("Example_State_3"));
 			}
 		});
 

@@ -128,55 +128,14 @@ namespace AssetDumpTextProcessing
 		FString Id;
 	};
 
-	/**
-	 * Blueprint graph pins (CustomProperties Pin (...) lines) are exported via UEdGraphPin::ExportTextItem.
-	 * Its PinType.* sub-fields are written through a loop that diffs each FProperty against a default
-	 * FEdGraphPinType instance (EdGraphPin.cpp, ExportTextItem) -- but that diff is a no-op for these
-	 * specific fields: e.g. FBoolProperty::ExportText_Internal (PropertyBool.cpp) ignores the DefaultValue
-	 * parameter entirely and always writes "True"/"False" regardless of it, so every pin restates the same
-	 * ~16 fields whether or not they hold a non-default value. Confirmed empirically -- every field below
-	 * appears in the raw, unstripped export of every pin, every time, not just some. Values are verified
-	 * against the actual constructor defaults in Engine/Classes/EdGraph/EdGraphPin.h; a field is only ever
-	 * stripped when it exactly equals its default, so a non-default value (e.g. bHidden=True on a hidden
-	 * self pin, or an actual LinkedTo=) is always left in place.
-	 */
-	static const TArray<TPair<FString, FString>>& GetDefaultPinFields()
+	TArray<FString> BuildDefaultFieldPatterns(const TArray<TPair<FString, FString>>& Fields)
 	{
-		static const TArray<TPair<FString, FString>> Defaults = {
-			{TEXT("PinType.ContainerType"), TEXT("None")},
-			{TEXT("PinType.bIsReference"), TEXT("False")},
-			{TEXT("PinType.bIsConst"), TEXT("False")},
-			{TEXT("PinType.bIsWeakPointer"), TEXT("False")},
-			{TEXT("PinType.bIsUObjectWrapper"), TEXT("False")},
-			{TEXT("PinType.bSerializeAsSinglePrecisionFloat"), TEXT("False")},
-			{TEXT("PinType.PinSubCategory"), TEXT("\"\"")},
-			{TEXT("PinType.PinSubCategoryObject"), TEXT("None")},
-			{TEXT("PinType.PinValueType"), TEXT("()")},
-			{TEXT("PinType.PinSubCategoryMemberReference"), TEXT("()")},
-			{TEXT("bHidden"), TEXT("False")},
-			{TEXT("bNotConnectable"), TEXT("False")},
-			{TEXT("bDefaultValueIsReadOnly"), TEXT("False")},
-			{TEXT("bDefaultValueIsIgnored"), TEXT("False")},
-			{TEXT("bAdvancedView"), TEXT("False")},
-			{TEXT("bOrphanedPin"), TEXT("False")},
-		};
-		return Defaults;
-	}
-
-	/** The same (Key, DefaultValue) pairs as GetDefaultPinFields(), precomputed once into "Key=Value,"
-	 *  search strings so StripDefaultPinNoise doesn't rebuild them from scratch on every pin line. */
-	static const TArray<FString>& GetDefaultPinFieldPatterns()
-	{
-		static const TArray<FString> Patterns = []
+		TArray<FString> Patterns;
+		Patterns.Reserve(Fields.Num());
+		for (const TPair<FString, FString>& Field : Fields)
 		{
-			TArray<FString> Result;
-			Result.Reserve(GetDefaultPinFields().Num());
-			for (const TPair<FString, FString>& Field : GetDefaultPinFields())
-			{
-				Result.Add(FString::Printf(TEXT("%s=%s,"), *Field.Key, *Field.Value));
-			}
-			return Result;
-		}();
+			Patterns.Add(FString::Printf(TEXT("%s=%s,"), *Field.Key, *Field.Value));
+		}
 		return Patterns;
 	}
 
@@ -230,7 +189,7 @@ namespace AssetDumpTextProcessing
 		return Line.Left(MarkerIndex) + Line.Mid(Index);
 	}
 
-	FString StripDefaultPinNoise(const FString& Line)
+	FString StripDefaultPinNoise(const FString& Line, const TArray<FString>& DefaultFieldPatterns)
 	{
 		if (!Line.Contains(TEXT("CustomProperties Pin")))
 		{
@@ -238,7 +197,7 @@ namespace AssetDumpTextProcessing
 		}
 
 		FString Result = Line;
-		for (const FString& Pattern : GetDefaultPinFieldPatterns())
+		for (const FString& Pattern : DefaultFieldPatterns)
 		{
 			RemoveFieldAtBoundary(Result, Pattern);
 		}
@@ -248,63 +207,281 @@ namespace AssetDumpTextProcessing
 		return Result;
 	}
 
-	bool IsRedundantNodesIndexLine(const FString& TrimmedLine)
+	bool TryParseArrayIndexLine(const FString& TrimmedLine, FString& OutValue)
 	{
-		if (!TrimmedLine.StartsWith(TEXT("Nodes(")))
+		int32 OpenParenIndex;
+		if (!TrimmedLine.FindChar(TEXT('('), OpenParenIndex) || OpenParenIndex == 0)
 		{
 			return false;
 		}
-		int32 CloseParenIndex;
-		return TrimmedLine.FindChar(TEXT(')'), CloseParenIndex) && TrimmedLine.IsValidIndex(CloseParenIndex + 1) && TrimmedLine[CloseParenIndex + 1] == TEXT('=');
+
+		// Everything before '(' must look like a property identifier (alnum/underscore only).
+		for (int32 Index = 0; Index < OpenParenIndex; ++Index)
+		{
+			const TCHAR Ch = TrimmedLine[Index];
+			if (!FChar::IsAlnum(Ch) && Ch != TEXT('_'))
+			{
+				return false;
+			}
+		}
+
+		const int32 Len = TrimmedLine.Len();
+		int32       Index = OpenParenIndex + 1;
+		if (Index >= Len || !FChar::IsDigit(TrimmedLine[Index]))
+		{
+			return false;
+		}
+		while (Index < Len && FChar::IsDigit(TrimmedLine[Index]))
+		{
+			++Index;
+		}
+		if (Index >= Len || TrimmedLine[Index] != TEXT(')'))
+		{
+			return false;
+		}
+		++Index;
+		if (Index >= Len || TrimmedLine[Index] != TEXT('='))
+		{
+			return false;
+		}
+
+		OutValue = TrimmedLine.Mid(Index + 1);
+		return true;
 	}
 
-	/** Tracks, for one open Begin/End Object block, whether it carries a Schema=...EdGraphSchema... property
-	 *  (the marker only a real UEdGraph, or subclass, ever exports) and which of its own Nodes(N)= line
-	 *  indices are candidates to drop if that marker turns out to be present. */
-	struct FNodesFilterFrame
+	void FindObjectPathReferenceNames(const FString& Value, TArray<FString>& OutNames)
 	{
-		bool          bHasEdGraphSchema = false;
-		TArray<int32> CandidateLineIndices;
-	};
-
-	TSet<int32> FindRedundantNodesIndexLineIndices(const TArray<FString>& Lines)
-	{
-		TArray<FNodesFilterFrame> Stack;
-		TSet<int32>               Result;
-
-		for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
+		const int32 Len = Value.Len();
+		int32       SearchFrom = 0;
+		while (SearchFrom < Len)
 		{
-			const FString Trimmed = Lines[LineIndex].TrimStart();
+			const int32 OpenQuoteIndex = Value.Find(TEXT("'"), ESearchCase::CaseSensitive, ESearchDir::FromStart, SearchFrom);
+			if (OpenQuoteIndex == INDEX_NONE)
+			{
+				break;
+			}
+			const int32 CloseQuoteIndex = Value.Find(TEXT("'"), ESearchCase::CaseSensitive, ESearchDir::FromStart, OpenQuoteIndex + 1);
+			if (CloseQuoteIndex == INDEX_NONE)
+			{
+				break;
+			}
+
+			const FString Path = Value.Mid(OpenQuoteIndex + 1, CloseQuoteIndex - OpenQuoteIndex - 1);
+
+			// The referenced object's own bare name is the trailing segment after the last '.' or ':'
+			// separator (a qualified sibling path looks like "Parent:Child"; a package path like
+			// "Package.Object"). If there's no separator, the whole path already is the bare name.
+			int32 LastSeparatorIndex = INDEX_NONE;
+			for (int32 Index = Path.Len() - 1; Index >= 0; --Index)
+			{
+				if (Path[Index] == TEXT('.') || Path[Index] == TEXT(':'))
+				{
+					LastSeparatorIndex = Index;
+					break;
+				}
+			}
+			const FString Name = (LastSeparatorIndex == INDEX_NONE) ? Path : Path.Mid(LastSeparatorIndex + 1);
+			if (!Name.IsEmpty())
+			{
+				OutNames.Add(Name);
+			}
+
+			SearchFrom = CloseQuoteIndex + 1;
+		}
+	}
+
+	/** Appends every guid immediately following a field-boundary-safe "ID=" or "Id=" marker on Line. Unlike
+	 *  FindGuidsInLine (which finds a guid anywhere on the line), this only matches a guid that is the value
+	 *  of a field literally named ID/Id -- e.g. the "ID=<guid>" a StateTree task/state/transition embeds as
+	 *  one sub-field of its own single-line struct literal (Tasks(0)=(Node=...,ID=<guid>)), not just any
+	 *  guid-shaped text appearing incidentally on the line. Both casings are real, distinct engine property
+	 *  names (e.g. FStateTreeNodeIdToIndex::Id vs. a state/task's own "ID" field), so both are checked. */
+	static void FindIdFieldGuids(const FString& Line, TSet<FString>& OutGuids)
+	{
+		for (const TCHAR* Marker : {TEXT("ID="), TEXT("Id=")})
+		{
+			int32 SearchFrom = 0;
+			for (;;)
+			{
+				const int32 MarkerIndex = FindFieldMarker(Line, Marker, SearchFrom);
+				if (MarkerIndex == INDEX_NONE)
+				{
+					break;
+				}
+
+				const int32 ValueStart = MarkerIndex + FCString::Strlen(Marker);
+				if (Line.IsValidIndex(ValueStart + 31) && !(ValueStart > 0 && IsGuidChar(Line[ValueStart - 1])) && !(Line.IsValidIndex(ValueStart + 32) && IsGuidChar(Line[ValueStart + 32])))
+				{
+					bool bAllGuidChars = true;
+					for (int32 Offset = 0; Offset < 32; ++Offset)
+					{
+						if (!IsGuidChar(Line[ValueStart + Offset]))
+						{
+							bAllGuidChars = false;
+							break;
+						}
+					}
+					if (bAllGuidChars)
+					{
+						OutGuids.Add(Line.Mid(ValueStart, 32));
+					}
+				}
+
+				SearchFrom = ValueStart;
+			}
+		}
+	}
+
+	TSet<int32> FindRedundantLookupArrayLineIndices(const TArray<FString>& Lines)
+	{
+		// Pass 1: collect every identifier already declared elsewhere in this object's own export. The
+		// exporter wraps even the top-level object itself in its own Begin/End Object pair, so a compiled,
+		// object-wide lookup/cross-reference property -- IDToStateMappings/IDToNodeMappings/
+		// IDToTransitionMappings, or a compiled bindings table like PropertyBindings=(SourceStructs=(...
+		// ID=<guid>...)) -- sits at depth 1 (a direct property of that outermost wrapper), while a State's own
+		// Tasks(N)=/Transitions(N)=/Evaluators(N)= entries (and the state's own bare "ID=<guid>" line) are
+		// always nested at least one level deeper, inside that State's own Begin/End Object frame. Only an
+		// ID=/Id= field found at depth > 1 -- i.e. actually within some nested child entity's own declared
+		// scope -- ever counts as a real declaration; one found at depth <= 1 is exactly the kind of top-level,
+		// object-wide compiled table that restates other entities' guids without being anyone's real
+		// declaration, so it must never be treated as one (a prior version of this function didn't make this
+		// distinction and let such a table falsely certify a real Tasks(N)= entry as "already known
+		// elsewhere", incorrectly stripping real behavioral data).
+		//
+		// Within depth > 1, two categories still need different treatment:
+		//
+		// - UnconditionalKnownIds / KnownObjectNames: an ID=<guid>/Id=<guid> field on a line that is NOT
+		//   itself array-element-shaped (e.g. a StateTree state's own standalone "ID=<guid>" line, a sibling
+		//   of its Name= property within the same Begin/End Object block), or a Begin Object header's own
+		//   Name="..." attribute. Neither has any competing line that could also claim to *be* that same
+		//   identifier's declaration, so these always count as "known elsewhere", unconditionally.
+		//
+		// - AmbiguousIdBestLength: an ID=/Id= field embedded *inside* a line that is itself array-element-
+		//   shaped -- e.g. a StateTree Tasks(N)=(Node=...,Instance=...,ID=<guid>) entry, which carries real,
+		//   unique behavioral data, restates its own guid the exact same way a genuinely redundant
+		//   IDToNodeMappings(N)=(Id=<guid>,Index=N) lookup entry does. Both are "array-element lines with an
+		//   embedded ID=/Id= field", so a flat known-set would let either one satisfy the other -- including a
+		//   rich declaration satisfying *itself* -- which is exactly backwards: the rich entry must never be
+		//   treated as redundant merely because a thin lookup elsewhere also mentions its guid. Recording the
+		//   length of the *richest* (longest) such line per guid, and later requiring a *strictly longer* line
+		//   to count as "known", resolves this: Tasks(N)= is always the longest assertion of its own guid (so
+		//   it can never be "known via a richer entry" than itself) and thus never redundant, while
+		//   IDToNodeMappings(N)= is always shorter than the real Tasks(N)= declaration it restates (so it
+		//   *is* known via a richer entry) and remains eligible for stripping.
+		TSet<FString>        UnconditionalKnownIds;
+		TMap<FString, int32> AmbiguousIdBestLength;
+		TSet<FString>        KnownObjectNames;
+
+		int32 Depth = 0;
+		for (const FString& Line : Lines)
+		{
+			const FString Trimmed = Line.TrimStart();
 			if (Trimmed.StartsWith(TEXT("Begin Object")))
 			{
-				Stack.AddDefaulted();
-				continue;
-			}
-			if (Trimmed.Equals(TEXT("End Object")))
-			{
-				if (Stack.Num() > 0)
+				++Depth;
+				static const FString NameMarker = TEXT("Name=\"");
+				const int32          NameIndex  = Trimmed.Find(NameMarker, ESearchCase::CaseSensitive);
+				if (NameIndex != INDEX_NONE)
 				{
-					FNodesFilterFrame Frame = Stack.Pop();
-					if (Frame.bHasEdGraphSchema)
+					const FString Rest = Trimmed.Mid(NameIndex + NameMarker.Len());
+					int32         QuoteIndex;
+					if (FindUnescapedQuote(Rest, QuoteIndex))
 					{
-						Result.Append(Frame.CandidateLineIndices);
+						KnownObjectNames.Add(Rest.Left(QuoteIndex));
 					}
 				}
 				continue;
 			}
-			if (Stack.Num() == 0)
+			if (Trimmed.Equals(TEXT("End Object")))
+			{
+				--Depth;
+				continue;
+			}
+
+			if (Depth <= 1)
+			{
+				// A direct property of the top-level exported object itself -- never a declaration source
+				// (see comment above), though it remains an ordinary candidate for the redundancy check below,
+				// same as any other line.
+				continue;
+			}
+
+			TSet<FString> IdsOnThisLine;
+			FindIdFieldGuids(Trimmed, IdsOnThisLine);
+			if (IdsOnThisLine.Num() == 0)
 			{
 				continue;
 			}
 
-			FNodesFilterFrame& Top = Stack.Top();
-			if (Trimmed.StartsWith(TEXT("Schema=")) && Trimmed.Contains(TEXT("EdGraphSchema")))
+			FString UnusedValue;
+			if (TryParseArrayIndexLine(Trimmed, UnusedValue))
 			{
-				Top.bHasEdGraphSchema = true;
+				const int32 TrimmedLen = Trimmed.Len();
+				for (const FString& Guid : IdsOnThisLine)
+				{
+					int32& BestLen = AmbiguousIdBestLength.FindOrAdd(Guid, 0);
+					BestLen = FMath::Max(BestLen, TrimmedLen);
+				}
 			}
-			else if (IsRedundantNodesIndexLine(Trimmed))
+			else
 			{
-				Top.CandidateLineIndices.Add(LineIndex);
+				UnconditionalKnownIds.Append(IdsOnThisLine);
+			}
+		}
+
+		// Pass 2: an array-element line is redundant only when every identifier embedded in its value is
+		// already known -- a line with no embedded identifiers at all (e.g. a plain-string array unrelated to
+		// object/guid lookups) is never touched, and neither is one referencing something not declared
+		// elsewhere in this object, nor one that is itself the richest (or only) assertion of its own guid.
+		TSet<int32>     Result;
+		TArray<FString> GuidTokens;
+		TArray<FString> NameTokens;
+		for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
+		{
+			const FString TrimmedLine = Lines[LineIndex].TrimStart();
+			FString       Value;
+			if (!TryParseArrayIndexLine(TrimmedLine, Value))
+			{
+				continue;
+			}
+
+			GuidTokens.Reset();
+			NameTokens.Reset();
+			FindGuidsInLine(Value, GuidTokens);
+			FindObjectPathReferenceNames(Value, NameTokens);
+
+			if (GuidTokens.Num() == 0 && NameTokens.Num() == 0)
+			{
+				continue;
+			}
+
+			const int32 ThisLineLength = TrimmedLine.Len();
+			bool        bAllKnown       = true;
+			for (const FString& Guid : GuidTokens)
+			{
+				const int32* AmbiguousBestLen     = AmbiguousIdBestLength.Find(Guid);
+				const bool   bKnownViaRicherEntry = AmbiguousBestLen && *AmbiguousBestLen > ThisLineLength;
+				if (!UnconditionalKnownIds.Contains(Guid) && !bKnownViaRicherEntry)
+				{
+					bAllKnown = false;
+					break;
+				}
+			}
+			for (const FString& Name : NameTokens)
+			{
+				if (!bAllKnown)
+				{
+					break;
+				}
+				if (!KnownObjectNames.Contains(Name))
+				{
+					bAllKnown = false;
+				}
+			}
+
+			if (bAllKnown)
+			{
+				Result.Add(LineIndex);
 			}
 		}
 

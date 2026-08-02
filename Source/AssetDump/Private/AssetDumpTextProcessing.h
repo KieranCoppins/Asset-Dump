@@ -36,27 +36,52 @@ namespace AssetDumpTextProcessing
 	FString StripPinFriendlyNameField(const FString& Line);
 
 	/**
-	 * Strips known-default/empty pin sub-fields from a "CustomProperties Pin (...)" line, drops
+	 * Turns {Key, DefaultValue} pairs (see AssetDumpPinDefaults::ComputeDefaultPinFieldValues, which computes
+	 * these against the live engine rather than a hardcoded table) into "Key=Value," search patterns ready
+	 * for StripDefaultPinNoise.
+	 */
+	TArray<FString> BuildDefaultFieldPatterns(const TArray<TPair<FString, FString>>& Fields);
+
+	/**
+	 * Strips default-valued pin sub-fields from a "CustomProperties Pin (...)" line (DefaultFieldPatterns is
+	 * the caller-supplied set of "Key=Value," patterns to remove -- see BuildDefaultFieldPatterns), drops
 	 * PersistentGuid entirely (pin-recompile bookkeeping, not part of what the graph does), and drops
 	 * PinFriendlyName entirely (cosmetic UI label, redundant with PinName). Every strip only matches at a
 	 * real field boundary, never inside a quoted pin value.
 	 */
-	FString StripDefaultPinNoise(const FString& Line);
-
-	/** A Nodes(N)="..." line is a pure ordering index shape shared by both UEdGraph (redundant -- every node
-	 *  it names is already fully declared via its own Begin Object block earlier in the graph) and unrelated
-	 *  classes with their own real Nodes array (e.g. UMovieSceneNodeGroup). This only checks the line's own
-	 *  shape; use FindRedundantNodesIndexLineIndices to additionally scope this to real EdGraph objects. */
-	bool IsRedundantNodesIndexLine(const FString& TrimmedLine);
+	FString StripDefaultPinNoise(const FString& Line, const TArray<FString>& DefaultFieldPatterns);
 
 	/**
-	 * Returns the indices within Lines (one exported object's full line list) of Nodes(N)="..." lines that
-	 * are safe to drop -- scoped to Begin/End Object blocks that carry a Schema=...EdGraphSchema... property,
-	 * which only a real UEdGraph (or subclass: material graphs, anim graphs, sound cue graphs, etc.) ever
-	 * exports. A same-shaped Nodes property on an unrelated class (UMovieSceneNodeGroup::Nodes) is never
-	 * included, since its enclosing block has no such Schema marker.
+	 * Matches a generic array-element property line, e.g. "Nodes(3)=..." or "IDToNodeMappings(0)=...": any
+	 * identifier immediately followed by "(<digits>)=". This only checks the line's own shape -- it says
+	 * nothing about whether the line is redundant; use FindRedundantLookupArrayLineIndices for that. On a
+	 * match, OutValue is set to everything after the "=".
 	 */
-	TSet<int32> FindRedundantNodesIndexLineIndices(const TArray<FString>& Lines);
+	bool TryParseArrayIndexLine(const FString& TrimmedLine, FString& OutValue);
+
+	/**
+	 * Finds every single-quote-delimited object-reference token in Value (the general UE text-export shape
+	 * for any object reference, "ClassPath'Path.To.Object'" -- see FObjectPropertyBase::GetExportPath) and
+	 * appends the referenced object's own bare name: the trailing segment after the last '.' or ':' in the
+	 * quoted path, e.g. "K2Node_Event_0" out of "/Script/BlueprintGraph.K2Node_Event'K2Node_Event_0'".
+	 */
+	void FindObjectPathReferenceNames(const FString& Value, TArray<FString>& OutNames);
+
+	/**
+	 * Returns the indices within Lines (one exported object's full line list) of array-element lines
+	 * (Prop(N)=value, matched via TryParseArrayIndexLine) that are safe to drop because every identifier
+	 * embedded in their value -- a 32-hex GUID (FindGuidsInLine) or an object-reference's bare name
+	 * (FindObjectPathReferenceNames) -- already appears elsewhere in this same object's own export, either
+	 * as an ID=<guid> property or as a Begin Object Name="..." header. This is the single general mechanism
+	 * behind two previously separate special cases: StateTree's IDToStateMappings/IDToNodeMappings/
+	 * IDToTransitionMappings (GUID lookup tables -- the referenced GUIDs already appear as ID= on the
+	 * corresponding state/task objects) and UEdGraph's Nodes(N)="..." index array (the referenced nodes are
+	 * already fully declared via their own Begin Object blocks). A same-shaped but unrelated array whose
+	 * values are plain strings (e.g. UMovieSceneNodeGroup::Nodes, which holds dotted path strings with no
+	 * object-reference quoting) yields no identifier tokens at all and so is never touched. A line with no
+	 * embedded identifiers, or with an identifier that isn't already known elsewhere, is left alone.
+	 */
+	TSet<int32> FindRedundantLookupArrayLineIndices(const TArray<FString>& Lines);
 
 	/**
 	 * Scans every exported object's lines and assigns each distinct FGuid-shaped hex token a short alias:

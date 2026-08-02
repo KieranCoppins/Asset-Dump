@@ -99,27 +99,27 @@ void FAssetDumpLineFormattingSpec::Define()
 	{
 		It("leaves a simple alnum name unchanged", [this]
 		{
-			TestEqual(TEXT("unchanged"), SanitizeAliasLabel(TEXT("Interact")), TEXT("Interact"));
+			TestEqual(TEXT("unchanged"), SanitizeAliasLabel(TEXT("Example")), TEXT("Example"));
 		});
 
 		It("replaces spaces with underscores", [this]
 		{
-			TestEqual(TEXT("spaces replaced"), SanitizeAliasLabel(TEXT("Interact with Post")), TEXT("Interact_with_Post"));
+			TestEqual(TEXT("spaces replaced"), SanitizeAliasLabel(TEXT("Example Name Test")), TEXT("Example_Name_Test"));
 		});
 
 		It("collapses doubled separators instead of doubling underscores", [this]
 		{
-			TestEqual(TEXT("collapsed"), SanitizeAliasLabel(TEXT("Interact  with--Post")), TEXT("Interact_with_Post"));
+			TestEqual(TEXT("collapsed"), SanitizeAliasLabel(TEXT("Example  Name--Test")), TEXT("Example_Name_Test"));
 		});
 
 		It("produces no leading underscore for leading non-alnum input", [this]
 		{
-			TestEqual(TEXT("no leading underscore"), SanitizeAliasLabel(TEXT("  Interact")), TEXT("Interact"));
+			TestEqual(TEXT("no leading underscore"), SanitizeAliasLabel(TEXT("  Example")), TEXT("Example"));
 		});
 
 		It("trims a trailing underscore from trailing non-alnum input", [this]
 		{
-			TestEqual(TEXT("no trailing underscore"), SanitizeAliasLabel(TEXT("Interact!!")), TEXT("Interact"));
+			TestEqual(TEXT("no trailing underscore"), SanitizeAliasLabel(TEXT("Example!!")), TEXT("Example"));
 		});
 
 		It("returns empty for empty input", [this]
@@ -233,122 +233,228 @@ void FAssetDumpLineFormattingSpec::Define()
 
 	Describe("StripDefaultPinNoise", [this]
 	{
-		It("leaves a non-pin line completely unchanged, even if it contains a default-looking field", [this]
-		{
-			const FString Line = TEXT("bHidden=False,Config=(Traits=(\"Foo\"))");
-			TestEqual(TEXT("unchanged"), StripDefaultPinNoise(Line), Line);
+		// StripDefaultPinNoise no longer owns its own field/value table (see AssetDumpPinDefaults, which
+		// computes it against the live engine) -- it just applies whatever patterns the caller supplies. This
+		// is a representative hand-built stand-in, kept here so these tests stay pure/engine-independent; the
+		// real computed table is exercised separately in Tests/AssetDumpPinDefaults.spec.cpp.
+		const TArray<FString> TestPatterns = BuildDefaultFieldPatterns({
+			{TEXT("PinType.ContainerType"), TEXT("None")},
+			{TEXT("PinType.bIsReference"), TEXT("False")},
+			{TEXT("PinType.bIsConst"), TEXT("False")},
+			{TEXT("PinType.bIsWeakPointer"), TEXT("False")},
+			{TEXT("PinType.bIsUObjectWrapper"), TEXT("False")},
+			{TEXT("PinType.bSerializeAsSinglePrecisionFloat"), TEXT("False")},
+			{TEXT("PinType.PinSubCategory"), TEXT("\"\"")},
+			{TEXT("PinType.PinSubCategoryObject"), TEXT("None")},
+			{TEXT("PinType.PinValueType"), TEXT("()")},
+			{TEXT("PinType.PinSubCategoryMemberReference"), TEXT("()")},
+			{TEXT("bHidden"), TEXT("False")},
+			{TEXT("bNotConnectable"), TEXT("False")},
+			{TEXT("bDefaultValueIsReadOnly"), TEXT("False")},
+			{TEXT("bDefaultValueIsIgnored"), TEXT("False")},
+			{TEXT("bAdvancedView"), TEXT("False")},
+			{TEXT("bOrphanedPin"), TEXT("False")},
 		});
 
-		It("strips every listed default field when present at its default value", [this]
+		It("leaves a non-pin line completely unchanged, even if it contains a default-looking field", [this, TestPatterns]
+		{
+			const FString Line = TEXT("bHidden=False,Config=(Traits=(\"Foo\"))");
+			TestEqual(TEXT("unchanged"), StripDefaultPinNoise(Line, TestPatterns), Line);
+		});
+
+		It("strips every listed default field when present at its default value", [this, TestPatterns]
 		{
 			const FString Line = TEXT("CustomProperties Pin (PinId=G1,PinName=\"self\",PinType.ContainerType=None,PinType.bIsReference=False,PinType.bIsConst=False,PinType.bIsWeakPointer=False,PinType.bIsUObjectWrapper=False,PinType.bSerializeAsSinglePrecisionFloat=False,PinType.PinSubCategory=\"\",PinType.PinSubCategoryObject=None,PinType.PinValueType=(),PinType.PinSubCategoryMemberReference=(),bHidden=False,bNotConnectable=False,bDefaultValueIsReadOnly=False,bDefaultValueIsIgnored=False,bAdvancedView=False,bOrphanedPin=False,)");
-			const FString Result = StripDefaultPinNoise(Line);
+			const FString Result = StripDefaultPinNoise(Line, TestPatterns);
 			TestEqual(TEXT("only PinId/PinName remain"), Result, TEXT("CustomProperties Pin (PinId=G1,PinName=\"self\",)"));
 		});
 
-		It("preserves bHidden=True completely untouched (highest-priority regression case)", [this]
+		It("preserves bHidden=True completely untouched (highest-priority regression case)", [this, TestPatterns]
 		{
 			const FString Line = TEXT("CustomProperties Pin (PinId=G1,PinName=\"self\",bHidden=True,bNotConnectable=False,)");
-			const FString Result = StripDefaultPinNoise(Line);
+			const FString Result = StripDefaultPinNoise(Line, TestPatterns);
 			TestEqual(TEXT("bHidden=True survives, only bNotConnectable stripped"), Result, TEXT("CustomProperties Pin (PinId=G1,PinName=\"self\",bHidden=True,)"));
 		});
 
-		It("leaves a populated LinkedTo= untouched", [this]
+		It("leaves a populated LinkedTo= untouched", [this, TestPatterns]
 		{
 			const FString Line = TEXT("CustomProperties Pin (PinId=G1,LinkedTo=(K2Node_IfThenElse_0 G2,),bHidden=False,)");
-			const FString Result = StripDefaultPinNoise(Line);
+			const FString Result = StripDefaultPinNoise(Line, TestPatterns);
 			TestEqual(TEXT("LinkedTo preserved"), Result, TEXT("CustomProperties Pin (PinId=G1,LinkedTo=(K2Node_IfThenElse_0 G2,),)"));
 		});
 
-		It("strips PersistentGuid regardless of its value", [this]
+		It("strips PersistentGuid regardless of its value", [this, TestPatterns]
 		{
 			const FString Line = TEXT("CustomProperties Pin (PinId=G1,PersistentGuid=G99,bHidden=False,)");
-			const FString Result = StripDefaultPinNoise(Line);
+			const FString Result = StripDefaultPinNoise(Line, TestPatterns);
 			TestEqual(TEXT("PersistentGuid stripped"), Result, TEXT("CustomProperties Pin (PinId=G1,)"));
 		});
 
-		It("strips PinFriendlyName as part of the combined pipeline", [this]
+		It("strips PinFriendlyName as part of the combined pipeline", [this, TestPatterns]
 		{
 			const FString Line = TEXT("CustomProperties Pin (PinId=G1,PinFriendlyName=NSLOCTEXT(\"K2Node\", \"Target\", \"Target\"),bHidden=False,)");
-			const FString Result = StripDefaultPinNoise(Line);
+			const FString Result = StripDefaultPinNoise(Line, TestPatterns);
 			TestEqual(TEXT("PinFriendlyName stripped"), Result, TEXT("CustomProperties Pin (PinId=G1,)"));
 		});
 
-		It("handles a realistic line exercising all three strip mechanisms together", [this]
+		It("handles a realistic line exercising all three strip mechanisms together", [this, TestPatterns]
 		{
 			const FString Line = TEXT("CustomProperties Pin (PinId=G1,PinName=\"self\",bHidden=True,bNotConnectable=False,PersistentGuid=G99,PinFriendlyName=NSLOCTEXT(\"K2Node\", \"Target\", \"Target\"),PinType.PinSubCategory=\"float\",)");
-			const FString Result = StripDefaultPinNoise(Line);
+			const FString Result = StripDefaultPinNoise(Line, TestPatterns);
 			TestEqual(TEXT("only non-default/non-strippable fields remain, in order"), Result, TEXT("CustomProperties Pin (PinId=G1,PinName=\"self\",bHidden=True,PinType.PinSubCategory=\"float\",)"));
 		});
 
-		It("leaves a pin line with none of the strippable fields unchanged, no crash", [this]
+		It("leaves a pin line with none of the strippable fields unchanged, no crash", [this, TestPatterns]
 		{
 			const FString Line = TEXT("CustomProperties Pin (PinId=G1,PinName=\"self\",)");
-			TestEqual(TEXT("unchanged"), StripDefaultPinNoise(Line), Line);
+			TestEqual(TEXT("unchanged"), StripDefaultPinNoise(Line, TestPatterns), Line);
 		});
 
-		It("does not strip a default-field pattern when it appears inside a quoted pin value", [this]
+		It("does not strip a default-field pattern when it appears inside a quoted pin value", [this, TestPatterns]
 		{
 			// A String/Text pin's designer-authored DefaultValue happens to literally contain the exact text
 			// of a strippable default field. Because it isn't preceded by a real field-boundary '(' or ',' at
 			// that position, it must survive untouched rather than being deleted out of the quoted value.
 			const FString Line = TEXT("CustomProperties Pin (PinId=G1,DefaultValue=\"example: bHidden=False, is the default\",)");
-			TestEqual(TEXT("quoted lookalike text preserved"), StripDefaultPinNoise(Line), Line);
+			TestEqual(TEXT("quoted lookalike text preserved"), StripDefaultPinNoise(Line, TestPatterns), Line);
 		});
 	});
 
-	Describe("IsRedundantNodesIndexLine", [this]
+	Describe("TryParseArrayIndexLine", [this]
 	{
-		It("matches Nodes(3)=", [this]
+		It("matches Nodes(3)= and extracts the value", [this]
 		{
-			TestTrue(TEXT("matches"), IsRedundantNodesIndexLine(TEXT("Nodes(3)=\"/Script/BlueprintGraph.K2Node_Event'K2Node_Event_0'\"")));
+			FString Value;
+			TestTrue(TEXT("matches"), TryParseArrayIndexLine(TEXT("Nodes(3)=\"/Script/BlueprintGraph.K2Node_Event'K2Node_Event_0'\""), Value));
+			TestEqual(TEXT("value extracted"), Value, TEXT("\"/Script/BlueprintGraph.K2Node_Event'K2Node_Event_0'\""));
 		});
 
 		It("matches the Nodes(0)= boundary case", [this]
 		{
-			TestTrue(TEXT("matches"), IsRedundantNodesIndexLine(TEXT("Nodes(0)=\"Foo\"")));
+			FString Value;
+			TestTrue(TEXT("matches"), TryParseArrayIndexLine(TEXT("Nodes(0)=\"Foo\""), Value));
 		});
 
-		It("does not match a line not starting with Nodes(", [this]
+		It("matches any property identifier, not just Nodes (e.g. IDToNodeMappings)", [this]
 		{
-			TestFalse(TEXT("no match"), IsRedundantNodesIndexLine(TEXT("NodesSomethingElse=\"Foo\"")));
+			FString Value;
+			TestTrue(TEXT("matches"), TryParseArrayIndexLine(TEXT("IDToNodeMappings(2)=(Id=G1,Index=0)"), Value));
+			TestEqual(TEXT("value extracted"), Value, TEXT("(Id=G1,Index=0)"));
 		});
 
-		It("does not match Nodes(3) with no = immediately after the close-paren", [this]
+		It("matches NodesArray(3)=... -- a same-shaped but differently-named property is a legitimate array-index line too", [this]
 		{
-			TestFalse(TEXT("no match"), IsRedundantNodesIndexLine(TEXT("Nodes(3)")));
+			// This is an intentional generalization from the old Nodes-only detector: the shape alone (any
+			// identifier followed by "(<digits>)=") is what TryParseArrayIndexLine checks. Whether the line is
+			// actually redundant is a separate question, answered by FindRedundantLookupArrayLineIndices.
+			FString Value;
+			TestTrue(TEXT("matches"), TryParseArrayIndexLine(TEXT("NodesArray(3)=\"Foo\""), Value));
 		});
 
-		It("does not false-match NodesArray(3)=... which merely starts with the substring Nodes", [this]
+		It("does not match a line with no parens at all", [this]
 		{
-			TestFalse(TEXT("no match"), IsRedundantNodesIndexLine(TEXT("NodesArray(3)=\"Foo\"")));
+			FString Value;
+			TestFalse(TEXT("no match"), TryParseArrayIndexLine(TEXT("NodesSomethingElse=\"Foo\""), Value));
+		});
+
+		It("does not match when there is no = immediately after the close-paren", [this]
+		{
+			FString Value;
+			TestFalse(TEXT("no match"), TryParseArrayIndexLine(TEXT("Nodes(3)"), Value));
+		});
+
+		It("does not match a non-identifier character before the open-paren", [this]
+		{
+			FString Value;
+			TestFalse(TEXT("no match"), TryParseArrayIndexLine(TEXT("Foo-Bar(3)=\"Baz\""), Value));
+		});
+
+		It("does not match when the parens contain no digits", [this]
+		{
+			FString Value;
+			TestFalse(TEXT("no match"), TryParseArrayIndexLine(TEXT("Nodes()=\"Foo\""), Value));
 		});
 
 		It("does not match when the line still has leading whitespace (trimming is the caller's job)", [this]
 		{
-			TestFalse(TEXT("no match"), IsRedundantNodesIndexLine(TEXT("   Nodes(3)=\"Foo\"")));
+			FString Value;
+			TestFalse(TEXT("no match"), TryParseArrayIndexLine(TEXT("   Nodes(3)=\"Foo\""), Value));
 		});
 	});
 
-	Describe("FindRedundantNodesIndexLineIndices", [this]
+	Describe("FindObjectPathReferenceNames", [this]
 	{
-		It("drops Nodes() lines inside a real EdGraph object (has a Schema=...EdGraphSchema... marker)", [this]
+		It("extracts the bare object name from a ClassPath'Name' reference", [this]
+		{
+			TArray<FString> Names;
+			FindObjectPathReferenceNames(TEXT("\"/Script/BlueprintGraph.K2Node_Event'K2Node_Event_0'\""), Names);
+			TestEqual(TEXT("one name"), Names.Num(), 1);
+			if (Names.Num() == 1)
+			{
+				TestEqual(TEXT("bare name"), Names[0], TEXT("K2Node_Event_0"));
+			}
+		});
+
+		It("extracts only the trailing segment of a qualified sibling path", [this]
+		{
+			TArray<FString> Names;
+			FindObjectPathReferenceNames(TEXT("\"/Script/Engine.EdGraphNode'EventGraph:K2Node_Event_0'\""), Names);
+			TestEqual(TEXT("one name"), Names.Num(), 1);
+			if (Names.Num() == 1)
+			{
+				TestEqual(TEXT("trailing segment only"), Names[0], TEXT("K2Node_Event_0"));
+			}
+		});
+
+		It("finds multiple quoted references in one value", [this]
+		{
+			TArray<FString> Names;
+			FindObjectPathReferenceNames(TEXT("(Class'A',Class'B')"), Names);
+			TestEqual(TEXT("two names"), Names.Num(), 2);
+			if (Names.Num() == 2)
+			{
+				TestEqual(TEXT("first"), Names[0], TEXT("A"));
+				TestEqual(TEXT("second"), Names[1], TEXT("B"));
+			}
+		});
+
+		It("returns empty for a plain string with no single-quote decoration", [this]
+		{
+			TArray<FString> Names;
+			FindObjectPathReferenceNames(TEXT("\"Tracks.Group1.Node\""), Names);
+			TestEqual(TEXT("no names"), Names.Num(), 0);
+		});
+
+		It("returns empty for empty input", [this]
+		{
+			TArray<FString> Names;
+			FindObjectPathReferenceNames(TEXT(""), Names);
+			TestEqual(TEXT("no names"), Names.Num(), 0);
+		});
+	});
+
+	Describe("FindRedundantLookupArrayLineIndices", [this]
+	{
+		It("drops Nodes() lines whose referenced nodes are actually declared via their own Begin Object blocks", [this]
 		{
 			const TArray<FString> Lines = {
 				TEXT("Begin Object Name=\"EventGraph\" ExportPath=\"/Script/Engine.EdGraph'/Game/BP.BP:EventGraph'\""),
-				TEXT("   Schema=\"/Script/CoreUObject.Class'/Script/BlueprintGraph.EdGraphSchema_K2'\""),
+				TEXT("   Begin Object Name=\"K2Node_Event_0\" ExportPath=\"/Script/BlueprintGraph.K2Node_Event'/Game/BP.BP:EventGraph.K2Node_Event_0'\""),
+				TEXT("   End Object"),
+				TEXT("   Begin Object Name=\"K2Node_CallFunction_0\" ExportPath=\"/Script/BlueprintGraph.K2Node_CallFunction'/Game/BP.BP:EventGraph.K2Node_CallFunction_0'\""),
+				TEXT("   End Object"),
 				TEXT("   Nodes(0)=\"/Script/BlueprintGraph.K2Node_Event'K2Node_Event_0'\""),
 				TEXT("   Nodes(1)=\"/Script/BlueprintGraph.K2Node_CallFunction'K2Node_CallFunction_0'\""),
 				TEXT("   bAllowDeletion=False"),
 				TEXT("End Object"),
 			};
-			const TSet<int32> Result = FindRedundantNodesIndexLineIndices(Lines);
+			const TSet<int32> Result = FindRedundantLookupArrayLineIndices(Lines);
 			TestEqual(TEXT("both Nodes() lines flagged"), Result.Num(), 2);
-			TestTrue(TEXT("index 2 flagged"), Result.Contains(2));
-			TestTrue(TEXT("index 3 flagged"), Result.Contains(3));
+			TestTrue(TEXT("index 5 flagged"), Result.Contains(5));
+			TestTrue(TEXT("index 6 flagged"), Result.Contains(6));
 		});
 
-		It("does NOT drop Nodes() lines on an object with no EdGraphSchema marker (e.g. UMovieSceneNodeGroup)", [this]
+		It("does NOT drop Nodes() lines whose values are plain strings, not object references (e.g. UMovieSceneNodeGroup)", [this]
 		{
 			const TArray<FString> Lines = {
 				TEXT("Begin Object Name=\"NodeGroup_0\" ExportPath=\"/Script/MovieScene.MovieSceneNodeGroup'/Game/LS.LS:NodeGroup_0'\""),
@@ -356,44 +462,114 @@ void FAssetDumpLineFormattingSpec::Define()
 				TEXT("   Nodes(1)=\"Tracks.Group1.OtherNode\""),
 				TEXT("End Object"),
 			};
-			const TSet<int32> Result = FindRedundantNodesIndexLineIndices(Lines);
+			const TSet<int32> Result = FindRedundantLookupArrayLineIndices(Lines);
 			TestEqual(TEXT("nothing flagged -- real MovieScene node-path data preserved"), Result.Num(), 0);
 		});
 
-		It("still recognizes the Schema marker even when Nodes() lines appear before it in the block", [this]
+		It("drops a StateTree-style IDToNodeMappings(N)=(Id=<guid>,...) line whose guid is declared several nesting levels deep", [this]
 		{
+			// IDToNodeMappings is a property of the top-level object itself (not nested in any Begin Object),
+			// while the guid it references can be declared arbitrarily deep inside nested state/task objects --
+			// proving the detector isn't scoped to a single frame, only to "somewhere in this same object".
+			const FString         Guid  = TEXT("11111111111111111111111111111111");
 			const TArray<FString> Lines = {
-				TEXT("Begin Object Name=\"EventGraph\" ExportPath=\"/Script/Engine.EdGraph'/Game/BP.BP:EventGraph'\""),
-				TEXT("   Nodes(0)=\"/Script/BlueprintGraph.K2Node_Event'K2Node_Event_0'\""),
-				TEXT("   Schema=\"/Script/CoreUObject.Class'/Script/BlueprintGraph.EdGraphSchema_K2'\""),
+				TEXT("Begin Object Name=\"RootState\" ExportPath=\"/Script/StateTreeModule.StateTreeState'/Game/ST.ST:RootState'\""),
+				TEXT("   Begin Object Name=\"NestedTask\" ExportPath=\"/Script/StateTreeModule.StateTreeTask'/Game/ST.ST:RootState.NestedTask'\""),
+				TEXT("      ID=") + Guid,
+				TEXT("   End Object"),
 				TEXT("End Object"),
+				TEXT("IDToNodeMappings(0)=(Id=") + Guid + TEXT(",Index=0)"),
 			};
-			const TSet<int32> Result = FindRedundantNodesIndexLineIndices(Lines);
-			TestEqual(TEXT("Nodes() line still flagged regardless of ordering"), Result.Num(), 1);
-			TestTrue(TEXT("index 1 flagged"), Result.Contains(1));
+			const TSet<int32> Result = FindRedundantLookupArrayLineIndices(Lines);
+			TestEqual(TEXT("the mapping line is flagged"), Result.Num(), 1);
+			TestTrue(TEXT("index 5 flagged"), Result.Contains(5));
 		});
 
-		It("keeps a nested non-EdGraph block's Nodes() separate from its EdGraph parent", [this]
+		It("does not drop an array line referencing an identifier that is not declared anywhere else", [this]
 		{
 			const TArray<FString> Lines = {
-				TEXT("Begin Object Name=\"EventGraph\" ExportPath=\"/Script/Engine.EdGraph'/Game/BP.BP:EventGraph'\""),
-				TEXT("   Schema=\"/Script/CoreUObject.Class'/Script/BlueprintGraph.EdGraphSchema_K2'\""),
-				TEXT("   Begin Object Name=\"NodeGroup_0\" ExportPath=\"/Script/MovieScene.MovieSceneNodeGroup'.../NodeGroup_0'\""),
-				TEXT("      Nodes(0)=\"Tracks.Group1.Node\""),
+				TEXT("Begin Object Name=\"Known\" ExportPath=\"/Script/Engine.Object'/Game/X.X:Known'\""),
+				TEXT("End Object"),
+				TEXT("SomeArray(0)=\"/Script/Engine.Object'UnknownThing'\""),
+			};
+			const TSet<int32> Result = FindRedundantLookupArrayLineIndices(Lines);
+			TestEqual(TEXT("nothing flagged -- referenced identifier is genuinely unknown"), Result.Num(), 0);
+		});
+
+		It("keeps a real Tasks(N)= entry (with its own trailing ID=) while still stripping its IDToNodeMappings restatement (regression)", [this]
+		{
+			// Reproduces a real StateTree dump structure: Tasks(0) is nested inside a State's own Begin/End
+			// Object block (a real, richly-detailed declaration with its own trailing self-identity tag),
+			// while IDToNodeMappings is a direct property of the top-level object itself (a thin compiled
+			// lookup restating the same guid). Both match the array-index shape and both embed the guid via an
+			// ID=/Id= field, so without the richness/self-exclusion logic this regressed to stripping the real
+			// Tasks(0) declaration instead of just the redundant lookup.
+			const FString Guid = TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+			const TArray<FString> Lines = {
+				TEXT("Begin Object Name=\"ExampleStateTree\" ExportPath=\"...\""),
+				TEXT("   Begin Object Name=\"StateTreeEditorData_0\" ExportPath=\"...\""),
+				TEXT("      Begin Object Name=\"StateTreeState_0\" ExportPath=\"...\""),
+				TEXT("         Tasks(0)=(Node=/Script/ExampleModule.ExampleTask(bTaskEnabled=True,TransitionHandlingPriority=Normal,bConsideredForCompletion=False,bCanEditConsideredForCompletion=True,Name=\"\",BindingsBatch=(Value=65535),OutputBindingsBatch=(Value=65535),InstanceTemplateIndex=(Value=65535),ExecutionRuntimeTemplateIndex=(Value=65535),InstanceDataHandle=(Source=None,Index=65535,StateHandle=(Index=65535))),Instance=/Script/ExampleModule.ExampleTaskInstanceData(TargetEntity=(),Location=(X=0.000000,Y=0.000000,Z=0.000000)),ID=") + Guid + TEXT(")"),
+				TEXT("      End Object"),
 				TEXT("   End Object"),
-				TEXT("   Nodes(0)=\"/Script/BlueprintGraph.K2Node_Event'K2Node_Event_0'\""),
+				TEXT("   IDToNodeMappings(0)=(Id=") + Guid + TEXT(",Index=(Value=0))"),
 				TEXT("End Object"),
 			};
-			const TSet<int32> Result = FindRedundantNodesIndexLineIndices(Lines);
-			TestEqual(TEXT("only the EdGraph's own Nodes() line is flagged"), Result.Num(), 1);
-			TestTrue(TEXT("index 5 (EdGraph's Nodes) flagged"), Result.Contains(5));
-			TestFalse(TEXT("index 3 (nested MovieSceneNodeGroup's Nodes) not flagged"), Result.Contains(3));
+			const TSet<int32> Result = FindRedundantLookupArrayLineIndices(Lines);
+			TestFalse(TEXT("Tasks(0) must survive"), Result.Contains(3));
+			TestTrue(TEXT("IDToNodeMappings(0) should be stripped"), Result.Contains(6));
+		});
+
+		It("does not let a top-level compiled bindings table falsely certify a nested Tasks(N)= entry as already-known (regression)", [this]
+		{
+			// A real StateTree also exports a compiled, object-wide bindings table (PropertyBindings=(
+			// SourceStructs=(...ID=<guid>...))) as a direct property of the top-level object, restating every
+			// task/state/evaluator's guid alongside unrelated metadata. Because that whole line doesn't match
+			// the array-index shape, it used to be treated as an unconditional declaration source -- letting it
+			// falsely certify Tasks(0)'s own guid as "known elsewhere" and incorrectly strip the real
+			// declaration. Only identifiers declared *within* a nested child entity's own scope (depth > 1)
+			// may ever satisfy another line's redundancy; a depth-1 property of the top-level object never can,
+			// regardless of its own shape.
+			const FString Guid = TEXT("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+			const TArray<FString> Lines = {
+				TEXT("Begin Object Name=\"ExampleStateTree\" ExportPath=\"...\""),
+				TEXT("   Begin Object Name=\"StateTreeEditorData_0\" ExportPath=\"...\""),
+				TEXT("      Begin Object Name=\"StateTreeState_0\" ExportPath=\"...\""),
+				TEXT("         Tasks(0)=(Node=/Script/ExampleModule.ExampleTask(...),ID=") + Guid + TEXT(")"),
+				TEXT("      End Object"),
+				TEXT("   End Object"),
+				TEXT("   PropertyBindings=(SourceStructs=((DataHandle=(Source=ActiveInstanceData),DataSource=Task,Struct=\"...\",Name=\"Example Task\",ID=") + Guid + TEXT(")))"),
+				TEXT("End Object"),
+			};
+			const TSet<int32> Result = FindRedundantLookupArrayLineIndices(Lines);
+			TestFalse(TEXT("Tasks(0) must survive -- PropertyBindings is a depth-1 lookup, not a declaration"), Result.Contains(3));
+		});
+
+		It("does not drop an array line with no embedded identifiers at all", [this]
+		{
+			const TArray<FString> Lines = {
+				TEXT("Weights(0)=3.5"),
+			};
+			const TSet<int32> Result = FindRedundantLookupArrayLineIndices(Lines);
+			TestEqual(TEXT("nothing flagged -- no guid or object-reference tokens to match"), Result.Num(), 0);
+		});
+
+		It("flags a redundant line regardless of whether its declaration appears before or after it", [this]
+		{
+			const TArray<FString> Lines = {
+				TEXT("Nodes(0)=\"/Script/BlueprintGraph.K2Node_Event'K2Node_Event_0'\""),
+				TEXT("Begin Object Name=\"K2Node_Event_0\" ExportPath=\"/Script/BlueprintGraph.K2Node_Event'/Game/BP.BP:K2Node_Event_0'\""),
+				TEXT("End Object"),
+			};
+			const TSet<int32> Result = FindRedundantLookupArrayLineIndices(Lines);
+			TestEqual(TEXT("flagged even though its declaration comes later"), Result.Num(), 1);
+			TestTrue(TEXT("index 0 flagged"), Result.Contains(0));
 		});
 
 		It("returns an empty set for empty input", [this]
 		{
 			const TArray<FString> Lines;
-			TestEqual(TEXT("empty"), FindRedundantNodesIndexLineIndices(Lines).Num(), 0);
+			TestEqual(TEXT("empty"), FindRedundantLookupArrayLineIndices(Lines).Num(), 0);
 		});
 	});
 }

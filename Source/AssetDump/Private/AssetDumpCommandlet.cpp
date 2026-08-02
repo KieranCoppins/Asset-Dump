@@ -3,6 +3,7 @@
 
 #include "AssetDumpCommandlet.h"
 
+#include "AssetDumpPinDefaults.h"
 #include "AssetDumpTextProcessing.h"
 #include "Exporters/Exporter.h"
 #include "Misc/StringOutputDevice.h"
@@ -87,6 +88,12 @@ EAssetDumpExitCode UAssetDumpCommandlet::DumpObjects(const TArray<UObject*>& Obj
 	const FString                   Extension = TEXT("t3d");
 	const FExportObjectInnerContext Context;
 
+	// PPF_SeparateDefine skips the exporter's "declare only" pass over nested subobjects (which just restates
+	// their class/name a second time with no property values) and goes straight to the pass that fills in
+	// property values. Type information isn't lost: ExportPath= (still emitted regardless of this flag)
+	// already encodes each subobject's class inline.
+	const int32 PortFlags = PPF_ExportsNotFullyQualified | PPF_SeparateDefine;
+
 	// Export every object first, without logging, so the GUID alias map below can be built from -- and
 	// then consistently applied across -- all of this run's output rather than just one object at a time.
 	TArray<UObject*>        ExportedObjects;
@@ -104,12 +111,7 @@ EAssetDumpExitCode UAssetDumpCommandlet::DumpObjects(const TArray<UObject*>& Obj
 		}
 
 		FStringOutputDevice Buffer;
-
-		// PPF_SeparateDefine skips the exporter's "declare only" pass over nested subobjects (which just
-		// restates their class/name a second time with no property values) and goes straight to the pass
-		// that fills in property values. Type information isn't lost: ExportPath= (still emitted regardless
-		// of this flag) already encodes each subobject's class inline.
-		UExporter::ExportToOutputDevice(&Context, Object, Exporter, Buffer, *Extension, 0, PPF_ExportsNotFullyQualified | PPF_SeparateDefine, false);
+		UExporter::ExportToOutputDevice(&Context, Object, Exporter, Buffer, *Extension, 0, PortFlags, false);
 
 		TMap<FString, FString> NativePropertyValues;
 		if (Object->GetNativePropertyValues(NativePropertyValues) && NativePropertyValues.Num() > 0)
@@ -144,11 +146,19 @@ EAssetDumpExitCode UAssetDumpCommandlet::DumpObjects(const TArray<UObject*>& Obj
 		UE_LOG(LogAssetDump, Display, TEXT("---- %d GUID(s) aliased to short ids for readability (scoped to this dump only) ----"), GuidToAlias.Num());
 	}
 
+	// Computed once per run (engine-constant, not per-object) against the live engine's own default pin
+	// values rather than a hardcoded table -- see AssetDumpPinDefaults::ComputeDefaultPinFieldValues. The
+	// port flags here are PPF_Delimited, not the object-level PortFlags above: UEdGraphNode::ExportCustomProperties
+	// (EdGraphNode.cpp) exports each pin via "Pin->ExportTextItem(PinString, PPF_Delimited);", ignoring
+	// whatever flags the outer object exporter used, so that's the flag set that actually reaches a pin's
+	// field-level export and must be matched here.
+	const TArray<FString> DefaultPinFieldPatterns = BuildDefaultFieldPatterns(AssetDumpPinDefaults::ComputeDefaultPinFieldValues(PPF_Delimited));
+
 	for (int32 ObjectIndex = 0; ObjectIndex < ExportedObjects.Num(); ++ObjectIndex)
 	{
 		UObject*                Object = ExportedObjects[ObjectIndex];
 		const TArray<FString>&  Lines  = ExportedObjectLines[ObjectIndex];
-		const TSet<int32>       RedundantNodesLineIndices = FindRedundantNodesIndexLineIndices(Lines);
+		const TSet<int32>       RedundantLookupArrayLineIndices = FindRedundantLookupArrayLineIndices(Lines);
 
 		UE_LOG(LogAssetDump, Display, TEXT("---- BEGIN %s ----"), *Object->GetPathName());
 
@@ -156,25 +166,18 @@ EAssetDumpExitCode UAssetDumpCommandlet::DumpObjects(const TArray<UObject*>& Obj
 		{
 			const FString& Line = Lines[LineIndex];
 
-			// StateTree's compiled IDToStateMappings/IDToNodeMappings/IDToTransitionMappings arrays are
-			// GUID->array-index lookup tables used only by the editor at runtime; the same GUIDs already
-			// appear as ID= on the corresponding source objects above, so these add no readable information.
-			const FString TrimmedLine = Line.TrimStart();
-			if (TrimmedLine.StartsWith(TEXT("IDTo")) && TrimmedLine.Contains(TEXT("Mappings(")))
+			// A "Prop(N)=value" array-element line whose value is entirely made up of identifiers (guids or
+			// object references) already declared elsewhere in this same object's export -- e.g. StateTree's
+			// IDToStateMappings/IDToNodeMappings/IDToTransitionMappings, or a UEdGraph's Nodes(N)="..." index
+			// -- is pure lookup/ordering bookkeeping that adds no readable information. See
+			// FindRedundantLookupArrayLineIndices for the general detection rule.
+			if (RedundantLookupArrayLineIndices.Contains(LineIndex))
 			{
+				UE_LOG(LogAssetDump, Verbose, TEXT("Dropping redundant lookup-array line: %s"), *Line);
 				continue;
 			}
 
-			// A UEdGraph's Nodes(N)="..." lines are a pure ordering index -- every node they name is already
-			// fully declared via its own Begin Object block earlier in the same graph. Scoped to objects that
-			// are actually EdGraphs (see FindRedundantNodesIndexLineIndices) so a same-shaped but unrelated
-			// Nodes property on another class (e.g. UMovieSceneNodeGroup::Nodes) is never dropped.
-			if (RedundantNodesLineIndices.Contains(LineIndex))
-			{
-				continue;
-			}
-
-			UE_LOG(LogAssetDump, Display, TEXT("%s"), *StripDefaultPinNoise(ApplyGuidAliases(Line, GuidToAlias)));
+			UE_LOG(LogAssetDump, Display, TEXT("%s"), *StripDefaultPinNoise(ApplyGuidAliases(Line, GuidToAlias), DefaultPinFieldPatterns));
 		}
 
 		UE_LOG(LogAssetDump, Display, TEXT("---- END %s ----"), *Object->GetPathName());

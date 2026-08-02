@@ -1,15 +1,19 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
+#include "AssetDumpPinDefaults.h"
 #include "AssetDumpTextProcessing.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/PropertyPortFlags.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
 // AssetDumpCommandlet::DumpObjects always applies GUID-alias substitution BEFORE pin-noise stripping on every
-// line -- StripDefaultPinNoise(ApplyGuidAliases(Line, GuidToAlias)). AssetDumpLineFormatting.spec.cpp and
-// AssetDumpGuidAliasing.spec.cpp only ever exercise each function in isolation, so neither would catch a
+// line -- StripDefaultPinNoise(ApplyGuidAliases(Line, GuidToAlias), DefaultPinFieldPatterns). AssetDumpLineFormatting.spec.cpp
+// and AssetDumpGuidAliasing.spec.cpp only ever exercise each function in isolation, so neither would catch a
 // regression in the actual composed order (or in a future default-pin-field value that happens to be
-// GUID-shaped). This file exercises the real two-function chain, in the real order, on a realistic line.
+// GUID-shaped). This file exercises the real chain, in the real order, on a realistic line, using the same
+// live-engine-computed default patterns DumpObjects() itself uses (see AssetDumpPinDefaults), not a hand-built
+// stand-in.
 BEGIN_DEFINE_SPEC(FAssetDumpPipelineSpec, "AssetDump.Pipeline", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
 END_DEFINE_SPEC(FAssetDumpPipelineSpec)
 
@@ -17,9 +21,15 @@ void FAssetDumpPipelineSpec::Define()
 {
 	using namespace AssetDumpTextProcessing;
 
-	Describe("The real DumpObjects() composition (alias-then-strip)", [this]
+	// UEdGraphNode::ExportCustomProperties (EdGraphNode.cpp) always exports each pin via
+	// "Pin->ExportTextItem(PinString, PPF_Delimited);", ignoring the outer object exporter's own port flags --
+	// PPF_Delimited is the flag set that actually reaches a pin's field-level export, and what DumpObjects()
+	// itself passes to ComputeDefaultPinFieldValues.
+	const TArray<FString> DefaultPinFieldPatterns = BuildDefaultFieldPatterns(AssetDumpPinDefaults::ComputeDefaultPinFieldValues(PPF_Delimited));
+
+	Describe("The real DumpObjects() composition (alias-then-strip)", [this, DefaultPinFieldPatterns]
 	{
-		It("aliases a pin's GUID fields and strips its default fields in the same pass, in the real order", [this]
+		It("aliases a pin's GUID fields and strips its default fields in the same pass, in the real order", [this, DefaultPinFieldPatterns]
 		{
 			const FString Guid = TEXT("F28263CFF1408FA098EB31AD5327FFD5");
 
@@ -49,7 +59,7 @@ void FAssetDumpPipelineSpec::Define()
 				return;
 			}
 
-			const FString Result = StripDefaultPinNoise(ApplyGuidAliases(*PinLine, GuidToAlias));
+			const FString Result = StripDefaultPinNoise(ApplyGuidAliases(*PinLine, GuidToAlias), DefaultPinFieldPatterns);
 
 			// The alias should appear (PinId=), the default fields (ContainerType, bIsReference, bHidden) and
 			// PersistentGuid should be gone, and PinName should survive untouched.
@@ -62,7 +72,7 @@ void FAssetDumpPipelineSpec::Define()
 			TestFalse(TEXT("no raw 32-char guid survives anywhere in the result"), Result.Contains(Guid));
 		});
 
-		It("does not let alias substitution interfere with default-field stripping on the same line", [this]
+		It("does not let alias substitution interfere with default-field stripping on the same line", [this, DefaultPinFieldPatterns]
 		{
 			// Regression guard: if a future default-pin-field literal value ever happened to be GUID-shaped,
 			// applying alias substitution first could change whether the strip pattern still matches. Confirm
@@ -80,7 +90,7 @@ void FAssetDumpPipelineSpec::Define()
 			const TMap<FString, FString> GuidToAlias = BuildGuidAliasMap(AllLines);
 
 			const FString PinLine = TEXT("CustomProperties Pin (PinId=") + Guid + TEXT(",PinType.bIsConst=False,PinType.PinSubCategory=\"\",bAdvancedView=False,)");
-			const FString Result  = StripDefaultPinNoise(ApplyGuidAliases(PinLine, GuidToAlias));
+			const FString Result  = StripDefaultPinNoise(ApplyGuidAliases(PinLine, GuidToAlias), DefaultPinFieldPatterns);
 
 			TestFalse(TEXT("PinType.bIsConst stripped after aliasing"), Result.Contains(TEXT("PinType.bIsConst=")));
 			TestFalse(TEXT("PinType.PinSubCategory stripped after aliasing"), Result.Contains(TEXT("PinType.PinSubCategory=\"\",")));
