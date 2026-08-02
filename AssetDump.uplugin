@@ -1,0 +1,23 @@
+﻿{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0",
+  "FriendlyName": "AssetDump",
+  "Description": "Commandlet that allows dumping human read-able text of uassets to console",
+  "Category": "Editor",
+  "CreatedBy": "Kieran Coppins",
+  "CreatedByURL": "",
+  "DocsURL": "",
+  "MarketplaceURL": "",
+  "CanContainContent": false,
+  "IsBetaVersion": false,
+  "IsExperimentalVersion": false,
+  "Installed": false,
+  "Modules": [
+    {
+      "Name": "AssetDump",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ]
+}
